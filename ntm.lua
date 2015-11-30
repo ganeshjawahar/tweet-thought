@@ -26,7 +26,7 @@ function NTM:__init(config, index2word, word2index)
 	self.reg = 0.001
 	self.batch_size = 2
 	self.max_epochs = 10
-	self.create_batch = true
+	self.create_batch = false
 	-- GPU/CPU
 	self.gpu = config.gpu
 
@@ -43,12 +43,76 @@ function NTM:__init(config, index2word, word2index)
 	if self.create_batch == true then
 		self:create_batches()
 	end
+	self:print_db_status()
+
+	-- Push stuffs to GPU
+	self:ship_to_gpu()
+
+	-- Start training
+	self:train_model()
+end
+
+-- Function to train the model
+function NTM:train_model()
+	print('NTM training...')
+	local start = sys.clock()
+	self.cur_batch = nil
+	local optim_state = {learningRate = self.learning_rate}
+	params, grad_params = self.protos.model:getParameters()
+	feval = function(x)
+		-- Get new params
+		params:copy(x)
+
+		-- Reset gradients
+		grad_params:zero()
+
+		-- loss is average of all criterions
+		local input = self.protos.model:forward(self.cur_batch)
+		local loss = self.protos.criterion:forward(input, self.protos.labels)
+		local grads = self.protos.criterion:backward(input, self.protos.labels)
+		self.protos.model:backward(self.cur_batch, grads)
+
+		loss = loss / #self.cur_batch
+		grad_params:div(#self.cur_batch)
+
+		return loss, grad_params
+	end
+
+	self.db:open()
+	local reader = self.db:txn(true)
+	for epoch = 1, self.max_epochs do
+		local epoch_start = sys.clock()
+		local indices = torch.randperm(self.batch_count)
+		local epoch_loss = 0
+		local epoch_iteration = 0
+		xlua.progress(1, self.batch_count)
+		for i = 1, self.batch_count do
+			self.cur_batch = reader:get('batch_'..indices[i])
+			local _, loss = optim.adam(feval, params, optim_state)
+			epoch_loss = epoch_loss + loss[1]
+			epoch_iteration = epoch_iteration + 1
+			if epoch_iteration % 10 == 0 then
+				xlua.progress(i, self.batch_count)	
+				collectgarbage()
+			end
+			self.cur_batch = nil
+		end
+		xlua.progress(self.batch_count, self.batch_count)
+		print(string.format("Epoch %d done in %.2f minutes. loss=%f\n", epoch, ((sys.clock() - epoch_start)/60), (epoch_loss / epoch_iteration)))
+	end
+	self.db:close()
+	print(string.format("Done in %.2f seconds.", sys.clock() - start))	
 end
 
 -- Function to build the NTM model
 function NTM:build_model()
 	self.protos = {} -- modules to be cuda()'d
-	self.protos.labels = torch.IntTensor(1 + self.neg_samples):fill(0); self.protos.labels[1] = 1;
+	self.protos.labels = {}
+	for i = 1, self.batch_size do 
+		local tensor = torch.Tensor(1 + self.neg_samples):fill(0); 
+		tensor[1] = 1; 
+		table.insert(self.protos.labels, tensor)
+	end
 	-- Define the lookups
 	self.word_vecs = nn.LookupTable(#self.index2word, self.word_dim)
 	self.doc_vecs = nn.LookupTable(#self.index2tweet, self.num_topics)
@@ -85,6 +149,15 @@ function NTM:call_auto_encoder(config)
 	collectgarbage()
 end
 
+-- Function to print no. of batches in the NTM DB.
+function NTM:print_db_status()
+	self.db:open()
+	local reader = self.db:txn(true)
+	self.batch_count = reader:get('size')[1]
+	print(self.batch_count..' batches found in NTM DB.')
+	self.db:close()
+end
+
 -- Function to create batches
 function NTM:create_batches()
 	print('creating ntm batches...')
@@ -96,14 +169,14 @@ function NTM:create_batches()
 	xlua.progress(1, #self.index2word)
 	local pc = 1
 	for word, tweet_id_list in pairs(self.word2tweets) do
-		for tweet_id, _ in ipairs(tweet_id_list) do
+		for tweet_id, _ in pairs(tweet_id_list) do
 			local doc_tensor, word_tensor = self:sample_negative_context(word, tweet_id, tweet_id_list)
-			table.insert(cur_batch, {word_tensor, doc_tensor})
+			table.insert(cur_batch, {doc_tensor, word_tensor})
 			if #cur_batch == self.batch_size then
 				self.batch_count = self.batch_count + 1
 				txn:put('batch_'..self.batch_count, cur_batch)
-				cur_batch = {}
 				cur_batch = nil
+				cur_batch = {}
 				xlua.progress(pc, #self.index2word)
 			end
 		end
@@ -115,12 +188,12 @@ function NTM:create_batches()
 	if #cur_batch ~= 0 then
 		self.batch_count = self.batch_count + 1
 		txn:put('batch_'..self.batch_count, cur_batch)
-		cur_batch = {}
+		cur_batch = nil
+		collectgarbage()
 	end
-	self.batch_count = self.batch_count - 1
+	txn:put('size', torch.IntTensor{self.batch_count})
 	xlua.progress(#self.index2word, #self.index2word)
 	txn:commit()
-	print(self.batch_count)
 	local reader = self.db:txn(true)
 	reader:abort()
 	self.db:close()
@@ -140,5 +213,24 @@ function NTM:sample_negative_context(word, tweet_id, tweet_id_list)
 			i = i + 1
 		end
 	end
+	if self.gpu == 1 then
+		doc_tensor = doc_tensor:cuda()
+		word_tensor = word_tensor:cuda()
+	end
 	return doc_tensor, word_tensor
+end
+
+-- Function to ship stuffs to GPU
+function NTM:ship_to_gpu()
+	if self.gpu == 1 then
+		for k, v in ipairs(self.protos) do
+			if type(v) == 'table' then
+				for _, i in ipairs(v) do
+					i = i:cuda()
+				end
+			else
+				v = v:cuda()
+			end
+		end
+	end
 end

@@ -58,7 +58,7 @@ function AutoEncoder:train_model()
 	self.cur_batch = nil
 	local optim_state = {learningRate = self.learning_rate}
 	params, grad_params = self.protos.model:getParameters()
-	feval=function(x)
+	feval = function(x)
 		-- Get new params
 		params:copy(x)
 
@@ -89,7 +89,7 @@ function AutoEncoder:train_model()
 			for j = 1, batch_end do
 				table.insert(self.cur_batch, self.protos.word_vecs.weight[indices[i + j - 1]])
 			end
-			local _, loss = optim.sgd(feval, params, optim_state)
+			local _, loss = optim.adam(feval, params, optim_state)
 			epoch_loss = epoch_loss + loss[1]
 			epoch_iteration = epoch_iteration + 1
 			if epoch_iteration % 10 == 0 then
