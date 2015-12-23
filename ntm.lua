@@ -22,11 +22,11 @@ function NTM:__init(config, index2word, word2index)
 	self.min_freq = config.min_freq
 	self.neg_samples = 2
 	-- optimization	
-	self.learning_rate = 0.01
+	self.learning_rate = 0.1
 	self.reg = 0.001
 	self.batch_size = 2
-	self.max_epochs = 10
-	self.create_batch = false
+	self.max_epochs = 1
+	self.create_batch = true
 	-- GPU/CPU
 	self.gpu = config.gpu
 
@@ -50,18 +50,24 @@ function NTM:__init(config, index2word, word2index)
 
 	-- Start training
 	self:train_model()
+
+	-- Save the topic vectors
+	self:save_topic_vectors()
+
+	-- Clean the memory
+	self:clean_memory()
 end
 
 -- Function to train the model
 function NTM:train_model()
-	print('NTM training...')
+	print('ntm: training...')
 	local start = sys.clock()
 	self.cur_batch = nil
 	local optim_state = {learningRate = self.learning_rate}
 	params, grad_params = self.protos.model:getParameters()
 	feval = function(x)
 		-- Get new params
-		params:copy(x)
+		if x ~= params then params:copy(x) end
 
 		-- Reset gradients
 		grad_params:zero()
@@ -102,6 +108,42 @@ function NTM:train_model()
 	end
 	self.db:close()
 	print(string.format("Done in %.2f seconds.", sys.clock() - start))	
+end
+
+-- Function to save the topic vectors
+function NTM:save_topic_vectors()
+	print('ntm: saving topic vectors...')
+	local start = sys.clock()
+	self.db:open()
+	local txn = self.db:txn()
+	xlua.progress(1, #self.index2tweet)
+	for i = 1, #self.index2tweet do
+		txn:put(self.index2tweet[i], self.doc_vecs.weight[i])
+		if i % 10000 == 0 then
+			txn:commit()
+			txn = self.db:txn()
+		end
+	end	
+	txn:put('num_docs', #self.index2tweet)
+	txn:commit()
+	self.db:close()
+	xlua.progress(#self.index2tweet, #self.index2tweet)
+	torch.save('topic_model.t7', self.protos)
+	print(string.format("Done in %.2f minutes.", (sys.clock() - start)/60))
+end
+
+-- Function to remove useless stuffs from memory
+function NTM:clean_memory()
+	print('ntm: cleaning the memory...')
+	for k, v in ipairs(self.protos) do
+		value = nil
+	end
+	self.word_vecs = nil
+	self.doc_vecs = nil
+	self.word2tweets = nil	
+	self.tweet2index = nil
+	self.index2tweet = nil
+	collectgarbage()
 end
 
 -- Function to build the NTM model
@@ -153,14 +195,14 @@ end
 function NTM:print_db_status()
 	self.db:open()
 	local reader = self.db:txn(true)
-	self.batch_count = reader:get('size')[1]
+	self.batch_count = reader:get('num_batches')
 	print(self.batch_count..' batches found in NTM DB.')
 	self.db:close()
 end
 
 -- Function to create batches
 function NTM:create_batches()
-	print('creating ntm batches...')
+	print('ntm: creating ntm batches...')
 	local start = sys.clock()
 	self.db:open()
 	local txn = self.db:txn()
@@ -179,6 +221,10 @@ function NTM:create_batches()
 				cur_batch = {}
 				xlua.progress(pc, #self.index2word)
 			end
+			if self.batch_count % 1000 == 0 then
+				txn:commit()
+				txn = self.db:txn()
+			end
 		end
 		if pc % 1000 == 0 then
 			collectgarbage()
@@ -191,13 +237,11 @@ function NTM:create_batches()
 		cur_batch = nil
 		collectgarbage()
 	end
-	txn:put('size', torch.IntTensor{self.batch_count})
+	txn:put('num_batches', self.batch_count)
 	xlua.progress(#self.index2word, #self.index2word)
 	txn:commit()
-	local reader = self.db:txn(true)
-	reader:abort()
 	self.db:close()
-	print(string.format("Done in %.2f seconds.", sys.clock() - start))
+	print(string.format("Done in %.2f minutes.", (sys.clock() - start)/60))
 end
 
 -- Function to create negative samples

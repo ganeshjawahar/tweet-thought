@@ -48,10 +48,11 @@ function utils.buildVocab(config)
 	config.vocab = {} -- word frequency map
 	config.index2word = {}
 	config.word2index = {}
-	config.index2char = {}
-	config.char2index = {}
+	config.index2char = {[1] = '<ZERO>'}
+	config.char2index = {['ZERO'] = 1}
+	config.max_word_l = 0 -- maximum length of a word in the corpus
 
-	local word_count, chat_count = 0, 0
+	local word_count, chat_count, max_word = 0, 0, nil
 	local fptr = io.open(config.data, 'r')
 	while true do
 		local line = fptr:read()
@@ -72,17 +73,25 @@ function utils.buildVocab(config)
 				end
 				word_count = word_count + 1
 				-- Fill character vocab.
+				local char_count = 0
 				for ch in word:gmatch"." do
 					if config.char2index[ch] == nil then
 						config.index2char[#config.index2char + 1] = ch
 						config.char2index[ch] = #config.index2char
 					end
+					char_count = char_count + 1
+				end
+				if char_count > config.max_word_l then
+					config.max_word_l = char_count
+					max_word = word
 				end
 			end
 		end
 		chat_count = chat_count + 1
 	end
-	io.close(fptr)	
+	io.close(fptr)
+	config.chat_count = chat_count	
+	config.max_word_l = config.max_word_l + 2 -- one each for begin and end tokens
 
 	-- Discard the words that doesn't meet minimum frequency and create indices.
 	for word, count in pairs(config.vocab) do
@@ -98,7 +107,13 @@ function utils.buildVocab(config)
 	config.vocab['<UK>'] = 1
 	config.index2word[#config.index2word + 1] = '<UK>'
 	config.word2index['<UK>'] = #config.index2word
+	-- Add special characters (Start/End of a word markers)
+	config.index2char[#config.index2char + 1] = '<START>'
+	config.char2index['<START>'] = #config.index2char
+	config.index2char[#config.index2char + 1] = '<END>'
+	config.char2index['<END>'] = #config.index2char
 
+	print('Maximum word length is: '..config.max_word_l..' ('..max_word..')')
 	print(string.format("Vocab size after eliminating words occuring less than %d times: %d", config.min_freq, #config.index2word))
 	print(string.format("%d characters, %d words, %d chats processed in %.2f minutes.", #config.index2char, word_count, chat_count, ((sys.clock() - start) / 60)))
 end
@@ -202,6 +217,64 @@ function utils.buildTweetVocab(config)
 	end
 	io.close(fptr)
 	print(string.format("%d tweets chats processed in %.2f minutes.", tweet_count, ((sys.clock() - start) / 60)))
+end
+
+-- Function to return array of numbers originally in string
+function utils.computeArray(string)
+	local res = {}
+	local items = utils.splitByChar(string, ',')
+	for _, item in ipairs(items) do
+		table.insert(res, tonumber(item))
+	end
+	return res
+end
+
+-- Function to return sum of array of numbers
+function utils.computeSum(num_table)
+	local res = 0
+	for _, item in ipairs(num_table) do
+		res = res + tonumber(item)
+	end
+	return res
+end
+
+-- Function to build frequency-based tree for Hierarchical Softmax
+function utils.create_frequency_tree(freq_map)
+	binSize=100
+	print('Creating frequency tree with '..binSize..' as bin size...')
+	local start = sys.clock()
+	local ft = torch.IntTensor(freq_map)
+	local vals, indices = ft:sort()
+	local tree = {}
+	local id = indices:size(1)
+	function recursiveTree(indices)
+		if indices:size(1) < binSize then
+			id = id + 1
+			tree[id] = indices
+			return
+		end
+		local parents = {}
+		for start = 1, indices:size(1), binSize do
+			local stop = math.min(indices:size(1), start + binSize - 1)
+			local bin = indices:narrow(1, start, stop - start + 1)
+			assert(bin:size(1) <= binSize)
+			id = id + 1
+			table.insert(parents, id)
+			tree[id] = bin
+		end
+		recursiveTree(indices.new(parents))
+	end
+	recursiveTree(indices)	
+	return tree, id
+end
+
+-- Function to create word map (for Softmaxtree)
+function utils.create_word_map(vocab,index2word)
+	word_map = {}
+	for i=1, #index2word do
+		word_map[i] = vocab[index2word[i]]
+	end
+	return word_map
 end
 
 return utils
