@@ -20,7 +20,7 @@ function AutoEncoder:__init(config, index2word, word2index)
 	self.min_freq = config.min_freq
 	self.num_topics = config.num_topics
 	-- optimization	
-	self.learning_rate = 0.01
+	self.learning_rate = 0.1
 	self.batch_size = 50
 	self.max_epochs = 10
 	-- GPU/CPU
@@ -47,13 +47,13 @@ end
 
 -- Function to save the matrix
 function AutoEncoder:save_weights()
-	print('Saving weight...')
+	print('ae: saving weight...')
 	torch.save('auto_ntm_w2.t7', self.protos.model:get(1):get(1).weight)
 end
 
 -- Function to start training
 function AutoEncoder:train_model()
-	print('Auto encoding...')
+	print('ae: Auto encoding...')
 	local start = sys.clock()
 	self.cur_batch = nil
 	local optim_state = {learningRate = self.learning_rate}
