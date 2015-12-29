@@ -259,10 +259,10 @@ end
 function LSTMEncoder:shareParams(cell, src)
 	if torch.type(cell) == 'nn.gModule' then
 		for i = 1, #cell.forwardnodes do
-		local node = cell.forwardnodes[i]
-		if node.data.module then
-			node.data.module:share(src.forwardnodes[i].data.module, 
-				'weight', 'bias', 'gradWeight', 'gradBias')
+			local node = cell.forwardnodes[i]
+			if node.data.module then
+				node.data.module:share(src.forwardnodes[i].data.module, 
+					'weight', 'bias', 'gradWeight', 'gradBias')
 		end
 	end
 	elseif torch.isTypeOf(cell, 'nn.Module') then  	

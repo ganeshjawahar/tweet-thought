@@ -8,13 +8,14 @@ local AutoEncoder = torch.class("AutoEncoder")
 local utils = require 'utils'
 
 -- Lua Constructor
-function AutoEncoder:__init(config, index2word, word2index)
+function AutoEncoder:__init(config, index2word, word2index, num_words)
 	-- data
 	self.data = config.data	
 	self.pre_train = config.pre_train
 	self.pre_train_dir = config.pre_train_dir
 	self.word2index = word2index
 	self.index2word = index2word
+	self.num_words = num_words
 	-- model params (general)
 	self.word_dim = config.word_dim
 	self.min_freq = config.min_freq
@@ -22,7 +23,7 @@ function AutoEncoder:__init(config, index2word, word2index)
 	-- optimization	
 	self.learning_rate = 0.1
 	self.batch_size = 50
-	self.max_epochs = 10
+	self.max_epochs = 5
 	-- GPU/CPU
 	self.gpu = config.gpu
 	if self.pre_train ~= 1 then
@@ -48,7 +49,7 @@ end
 -- Function to save the matrix
 function AutoEncoder:save_weights()
 	print('ae: saving weight...')
-	torch.save('auto_ntm_w2.t7', self.protos.model:get(1):get(1).weight)
+	torch.save('auto_ntm_w2.t7', self.protos.model:get(1):get(1):get(1).weight)
 end
 
 -- Function to start training
@@ -79,12 +80,12 @@ function AutoEncoder:train_model()
 
 	for epoch = 1, self.max_epochs do
 		local epoch_start = sys.clock()
-		local indices = torch.randperm(#self.index2word)
+		local indices = torch.randperm(self.num_words)
 		local epoch_loss = 0
 		local epoch_iteration = 0
-		xlua.progress(1, #self.index2word)
-		for i = 1, #self.index2word, self.batch_size do
-			local batch_end = math.min(i + self.batch_size - 1, #self.index2word) - i + 1
+		xlua.progress(1, self.num_words)
+		for i = 1, self.num_words, self.batch_size do
+			local batch_end = math.min(i + self.batch_size - 1, self.num_words) - i + 1
 			self.cur_batch = {}
 			for j = 1, batch_end do
 				table.insert(self.cur_batch, self.protos.word_vecs.weight[indices[i + j - 1]])
@@ -93,12 +94,12 @@ function AutoEncoder:train_model()
 			epoch_loss = epoch_loss + loss[1]
 			epoch_iteration = epoch_iteration + 1
 			if epoch_iteration % 10 == 0 then
-				xlua.progress(i, #self.index2word)	
+				xlua.progress(i, self.num_words)	
 				collectgarbage()
 			end
 			self.cur_batch = nil
 		end
-		xlua.progress(#self.index2word, #self.index2word)
+		xlua.progress(self.num_words, self.num_words)
 		print(string.format("Epoch %d done in %.2f minutes. loss=%f\n", epoch, ((sys.clock() - epoch_start)/60), (epoch_loss / epoch_iteration)))
 	end
 	print(string.format("Done in %.2f seconds.", sys.clock() - start))	
@@ -107,7 +108,7 @@ end
 -- Function to build the model
 function AutoEncoder:build_model()
 	self.protos = {} -- modules to be cuda()'d
-	self.protos.word_vecs = nn.LookupTable(#self.index2word, self.word_dim)
+	self.protos.word_vecs = nn.LookupTable(self.num_words, self.word_dim)
 	self.protos.model = nn.Sequential()
 	self.protos.model:add(nn.Linear(self.word_dim, self.num_topics))
 	self.protos.model:add(nn.Linear(self.num_topics, self.word_dim))

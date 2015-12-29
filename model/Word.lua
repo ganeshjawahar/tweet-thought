@@ -9,7 +9,7 @@ Semantic Compositionality of word, topic and character representations
 
 local Word = {}
 
-function Word.word(num_words, word_dim, num_chars, char_dim, length, feature_maps, kernels, isCudnn, highway_input_size, num_layers, bias, f)
+function Word.word(num_words, word_dim, num_chars, char_dim, length, feature_maps, kernels, isCudnn, char_conv_out_size, char_final_out_size, num_topics, rntn_in_size, num_layers, bias, f)
 	-- num_words = number of unique words in the corpus
 	-- word_dim = size of the word embeddings
 	-- num_chars = number of unique characters in the corpus
@@ -36,8 +36,9 @@ function Word.word(num_words, word_dim, num_chars, char_dim, length, feature_map
 	local word_embed = nn.View(-1)(nn.LookupTable(num_words, word_dim)(input[1]):annotate{name = 'word_lookup'})
 	local char_embed = nn.LookupTable(num_chars, char_dim)(input[2]):annotate{name = 'char_lookup'}
 	local char_conv_out = CHARCONV.conv(length, char_dim, feature_maps, kernels, isCudnn)(char_embed)
-	local concat = nn.JoinTable(1){word_embed, char_conv_out, input[3]}
-	local hw_out = HIGHWAY.mlp(highway_input_size, num_layers)(concat)
+	local char_final_out = nn.Linear(char_conv_out_size, char_final_out_size)(HIGHWAY.mlp(char_conv_out_size, num_layers)(char_conv_out))
+	local concat = nn.JoinTable(1){word_embed, char_final_out, input[3]}
+	local hw_out = nn.Linear(word_dim + char_final_out_size + num_topics, rntn_in_size)(HIGHWAY.mlp(word_dim + char_final_out_size + num_topics, num_layers)(concat))
 	table.insert(output, hw_out)
 
 	return nn.gModule(input, output)

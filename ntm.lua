@@ -8,13 +8,14 @@ local NTM = torch.class("NTM")
 local utils = require 'utils'
 
 -- Lua Constructor
-function NTM:__init(config, index2word, word2index)
+function NTM:__init(config, index2word, word2index, num_words)
 	-- data
 	self.data = config.data
 	self.pre_train = config.pre_train
 	self.pre_train_dir = config.pre_train_dir
 	self.index2word = index2word
 	self.word2index = word2index
+	self.num_words = num_words
 	self.db = lmdb.env{Path = './ntmDB', Name = 'ntmDB'}
 	-- model params (general)
 	self.word_dim = config.word_dim
@@ -24,8 +25,8 @@ function NTM:__init(config, index2word, word2index)
 	-- optimization	
 	self.learning_rate = 0.1
 	self.reg = 0.001
-	self.batch_size = 2
-	self.max_epochs = 1
+	self.batch_size = 1024
+	self.max_epochs = 5
 	self.create_batch = true
 	-- GPU/CPU
 	self.gpu = config.gpu
@@ -113,22 +114,35 @@ end
 -- Function to save the topic vectors
 function NTM:save_topic_vectors()
 	print('ntm: saving topic vectors...')
-	local start = sys.clock()
-	self.db:open()
-	local txn = self.db:txn()
-	xlua.progress(1, #self.index2tweet)
-	for i = 1, #self.index2tweet do
-		txn:put(self.index2tweet[i], self.doc_vecs.weight[i])
-		if i % 10000 == 0 then
+	local start = sys.clock()	
+	-- self.db:open()
+	-- local txn = self.db:txn()
+	-- xlua.progress(1, 100000)
+	-- self.doc_vecs = nn.LookupTable(100000, self.num_topics)
+	--[[
+	for i = 1, 100000 do
+		txn:put(tostring(i), self.doc_vecs.weight[i])
+		if i % 1000 == 0 then
+			collectgarbage()
 			txn:commit()
 			txn = self.db:txn()
 		end
 	end	
-	txn:put('num_docs', #self.index2tweet)
-	txn:commit()
-	self.db:close()
-	xlua.progress(#self.index2tweet, #self.index2tweet)
-	torch.save('topic_model.t7', self.protos)
+	]]--
+	local topic_vectors = {}
+	topic_vectors.tweet2index = self.tweet2index
+	topic_vectors.topic_weights = self.doc_vecs.weight
+	torch.save('topic_vectors.t7', topic_vectors)
+	-- txn:put('num_docs', 100000)
+	-- txn:commit()
+	-- self.db:close()
+	local topic_model = {}
+	topic_model.protos = self.protos
+	topic_model.word2tweets = self.word2tweets
+	topic_model.tweet2index = self.tweet2index
+	topic_model.index2tweet = self.index2tweet
+	torch.save('topic_model.t7', topic_model)
+	-- xlua.progress(100000, 100000)
 	print(string.format("Done in %.2f minutes.", (sys.clock() - start)/60))
 end
 
@@ -156,8 +170,8 @@ function NTM:build_model()
 		table.insert(self.protos.labels, tensor)
 	end
 	-- Define the lookups
-	self.word_vecs = nn.LookupTable(#self.index2word, self.word_dim)
-	self.doc_vecs = nn.LookupTable(#self.index2tweet, self.num_topics)
+	self.word_vecs = nn.LookupTable(#self.index2word, self.word_dim) -- 3000 for new words found during testing
+	self.doc_vecs = nn.LookupTable(#self.index2tweet + 50000, self.num_topics)
 	-- Define the topic - word model
 	self.protos.word_topic_model = nn.Sequential()
 	self.protos.word_topic_model:add(self.word_vecs)
@@ -181,7 +195,7 @@ end
 -- Function to call auto-encoder
 function NTM:call_auto_encoder(config)
 	if not path.exists('auto_ntm_w2.t7') then
-		local ae_model = AutoEncoder(config, self.index2word, self.word2index)
+		local ae_model = AutoEncoder(config, self.index2word, self.word2index, self.num_words)
 		ae_model = nil
 		collectgarbage()
 	end
@@ -208,7 +222,7 @@ function NTM:create_batches()
 	local txn = self.db:txn()
 	self.batch_count = 0
 	local cur_batch = {}
-	xlua.progress(1, #self.index2word)
+	xlua.progress(1, self.num_words)
 	local pc = 1
 	for word, tweet_id_list in pairs(self.word2tweets) do
 		for tweet_id, _ in pairs(tweet_id_list) do
@@ -219,7 +233,6 @@ function NTM:create_batches()
 				txn:put('batch_'..self.batch_count, cur_batch)
 				cur_batch = nil
 				cur_batch = {}
-				xlua.progress(pc, #self.index2word)
 			end
 			if self.batch_count % 1000 == 0 then
 				txn:commit()
@@ -228,6 +241,9 @@ function NTM:create_batches()
 		end
 		if pc % 1000 == 0 then
 			collectgarbage()
+		end
+		if pc % 100 == 0 then
+			xlua.progress(pc, self.num_words)
 		end
 		pc = pc + 1
 	end
@@ -238,7 +254,7 @@ function NTM:create_batches()
 		collectgarbage()
 	end
 	txn:put('num_batches', self.batch_count)
-	xlua.progress(#self.index2word, #self.index2word)
+	xlua.progress(self.num_words, self.num_words)
 	txn:commit()
 	self.db:close()
 	print(string.format("Done in %.2f minutes.", (sys.clock() - start)/60))
@@ -267,6 +283,7 @@ end
 -- Function to ship stuffs to GPU
 function NTM:ship_to_gpu()
 	if self.gpu == 1 then
+		--[[
 		for k, v in ipairs(self.protos) do
 			if type(v) == 'table' then
 				for _, i in ipairs(v) do
@@ -276,5 +293,9 @@ function NTM:ship_to_gpu()
 				v = v:cuda()
 			end
 		end
+		]]--
+		self.protos.model = self.protos.model:cuda()
+		for i = 1, #self.protos.labels do self.protos.labels[i] = self.protos.labels[i]:cuda() end
+		self.protos.criterion = self.protos.criterion:cuda()
 	end
 end
